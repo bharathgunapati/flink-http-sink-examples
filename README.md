@@ -7,8 +7,12 @@ The project demonstrates:
 - DataStream API usage with `HttpSink.builder()`
 - Table API / SQL DDL usage with `connector = 'http-async-sink'`
 - fixed-delay retries
+- exponential-delay retries
 - retryable, ignored, and fatal response status codes
 - single-request and batch-request sink modes
+
+It also includes downstream integration tests for the HTTP sink retry/configuration behavior added
+for PR 54.
 
 Each example starts an embedded HTTP server on `localhost:18080`.
 
@@ -48,6 +52,28 @@ java -cp target/flink-http-sink-examples-1.0-SNAPSHOT.jar \
 The Table API example creates an HTTP sink table with SQL DDL using
 `connector = 'http-async-sink'` and inserts sample rows. It uses batch request mode and retries a
 transient `500` response.
+
+## Run Downstream Regression Tests
+
+The tests install/use the locally published `flink-connector-http` artifact and run small Flink jobs
+against an embedded HTTP server:
+
+```bash
+mvn verify
+```
+
+The integration suite covers:
+
+- DataStream single-request retry: `500 -> 200`
+- DataStream batch retry: `503 -> 200`, asserting the same JSON array payload is retried
+- retry exhaustion and `http.sink.max-retries = 0`
+- ignored response codes treated as success without retrying
+- exponential-delay retry configuration
+- Table API DDL coverage for batch retry, custom success codes, ignored codes, fatal statuses, and
+  exponential-delay retry options
+
+The GitHub Actions workflow checks out `bharathgunapati/flink-connector-http` branch
+`FLINK-40277-sink-response-retries`, installs the connector snapshot, then runs `mvn verify`.
 
 ## Mock Endpoints
 

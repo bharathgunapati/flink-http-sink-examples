@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out examples
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+
+      - name: Check out flink-connector-http
+        uses: actions/checkout@v4
+        with:
+          repository: bharathgunapati/flink-connector-http
+          ref: FLINK-40277-sink-response-retries
+          path: flink-connector-http
+
+      - name: Install connector snapshot
+        working-directory: flink-connector-http
+        run: mvn -pl flink-connector-http -DskipTests install
+
+      - name: Run downstream examples and tests
+        run: mvn verify
