@@ -5,7 +5,7 @@ Small runnable examples for the Apache Flink HTTP sink connector.
 The project demonstrates:
 
 - DataStream API usage with `HttpSink.builder()`
-- Table API / SQL DDL usage with `connector = 'http'`
+- Table API / SQL DDL usage with `connector = 'http-async-sink'`
 - fixed-delay retries
 - retryable, ignored, and fatal response status codes
 - single-request and batch-request sink modes
@@ -27,8 +27,9 @@ mvn -pl flink-connector-http -DskipTests install
 ## Run DataStream Example
 
 ```bash
-mvn exec:java \
-  -Dexec.mainClass=com.example.flink.http.DataStreamHttpSinkExample
+mvn package
+java -cp target/flink-http-sink-examples-1.0-SNAPSHOT.jar \
+  com.example.flink.http.DataStreamHttpSinkExample
 ```
 
 The DataStream example writes JSON records to:
@@ -39,12 +40,14 @@ The DataStream example writes JSON records to:
 ## Run Table API Example
 
 ```bash
-mvn exec:java \
-  -Dexec.mainClass=com.example.flink.http.TableApiHttpSinkExample
+mvn package
+java -cp target/flink-http-sink-examples-1.0-SNAPSHOT.jar \
+  com.example.flink.http.TableApiHttpSinkExample
 ```
 
-The Table API example creates an HTTP sink table with SQL DDL and inserts sample rows. It uses
-batch request mode and retries a transient `500` response.
+The Table API example creates an HTTP sink table with SQL DDL using
+`connector = 'http-async-sink'` and inserts sample rows. It uses batch request mode and retries a
+transient `500` response.
 
 ## Mock Endpoints
 

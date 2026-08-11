@@ -18,7 +18,7 @@ public final class TableApiHttpSinkExample {
                             + "  id BIGINT,\n"
                             + "  event_type STRING\n"
                             + ") WITH (\n"
-                            + "  'connector' = 'http',\n"
+                            + "  'connector' = 'http-async-sink',\n"
                             + "  'url' = '"
                             + MockHttpServer.BASE_URL
                             + "/retry-then-ok',\n"
