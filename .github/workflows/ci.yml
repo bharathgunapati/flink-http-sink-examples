@@ -28,7 +28,9 @@ jobs:
 
       - name: Install connector snapshot
         working-directory: flink-connector-http
-        run: mvn -pl flink-connector-http -DskipTests install
+        run: |
+          mvn -N -DskipTests install
+          mvn -pl flink-connector-http -DskipTests install
 
       - name: Run downstream examples and tests
         run: mvn verify
