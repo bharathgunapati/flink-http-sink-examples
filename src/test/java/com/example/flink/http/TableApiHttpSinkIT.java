@@ -121,6 +121,41 @@ class TableApiHttpSinkIT {
         }
     }
 
+    @Test
+    void supportsLegacyErrorCodeOptionsFromDdl() {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerSequence("/table-legacy-fatal", 500);
+
+            assertThatThrownBy(
+                            () ->
+                                    runInsert(
+                                            server.baseUrl() + "/table-legacy-fatal",
+                                            Map.of("http.sink.error.code", "5XX")))
+                    .hasStackTraceContaining("HTTP sink received fatal response status");
+
+            assertThat(server.requestCount("/table-legacy-fatal")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void rejectsMixedLegacyAndNewStatusCodeOptionsFromDdl() {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerSequence("/table-mixed", 200);
+
+            assertThatThrownBy(
+                            () ->
+                                    runInsert(
+                                            server.baseUrl() + "/table-mixed",
+                                            Map.of(
+                                                    "http.sink.error.code",
+                                                    "4XX",
+                                                    "http.sink.success-codes",
+                                                    "2XX")))
+                    .hasStackTraceContaining(
+                            "Cannot set legacy HTTP sink error-code properties");
+        }
+    }
+
     private static void runInsert(String endpointUrl, Map<String, String> options) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);

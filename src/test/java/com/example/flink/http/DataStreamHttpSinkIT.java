@@ -170,6 +170,65 @@ class DataStreamHttpSinkIT {
         }
     }
 
+    @Test
+    void supportsLegacyErrorCodeOptions() {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerSequence("/legacy-fatal", 500);
+
+            assertThatThrownBy(
+                            () ->
+                                    runDataStreamJob(
+                                            server.baseUrl() + "/legacy-fatal",
+                                            List.of("{\"id\":1,\"api\":\"datastream\"}"),
+                                            Map.of(
+                                                    HttpConnectorConfigConstants
+                                                            .HTTP_ERROR_SINK_CODES_LIST,
+                                                    "5XX")))
+                    .hasStackTraceContaining("HTTP sink received fatal response status");
+
+            assertThat(server.requestCount("/legacy-fatal")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void supportsLegacyExcludeAsIgnoredStatus() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerSequence("/legacy-exclude", 404);
+
+            runDataStreamJob(
+                    server.baseUrl() + "/legacy-exclude",
+                    List.of("{\"id\":1,\"api\":\"datastream\"}"),
+                    Map.of(
+                            HttpConnectorConfigConstants.HTTP_ERROR_SINK_CODES_LIST,
+                            "4XX",
+                            HttpConnectorConfigConstants.HTTP_ERROR_SINK_CODE_INCLUDE_LIST,
+                            "404"));
+
+            assertThat(server.requestCount("/legacy-exclude")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void rejectsMixedLegacyAndNewStatusCodeOptions() {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerSequence("/mixed", 200);
+
+            assertThatThrownBy(
+                            () ->
+                                    runDataStreamJob(
+                                            server.baseUrl() + "/mixed",
+                                            List.of("{\"id\":1,\"api\":\"datastream\"}"),
+                                            Map.of(
+                                                    HttpConnectorConfigConstants
+                                                            .HTTP_ERROR_SINK_CODES_LIST,
+                                                    "4XX",
+                                                    HttpConnectorConfigConstants.SINK_SUCCESS_CODES,
+                                                    "2XX")))
+                    .hasStackTraceContaining(
+                            "Cannot set legacy HTTP sink error-code properties");
+        }
+    }
+
     private static void runDataStreamJob(
             String endpointUrl, List<String> payloads, Map<String, String> properties)
             throws Exception {
