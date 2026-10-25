@@ -9,6 +9,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -311,6 +312,179 @@ class DataStreamHttpSinkIT {
                                                     "2XX")))
                     .hasStackTraceContaining(
                             "Cannot set legacy HTTP sink error-code properties");
+        }
+    }
+
+    // ---- FLINK-40279: OIDC, proxy and HTTP version on the sink ----
+
+    @Test
+    void addsBearerTokenFromOidcAndReusesItWhileValid() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerTokenEndpoint("/oauth/token", 3600, 0);
+            server.registerBearerProtected("/oidc");
+
+            // batch size 1 turns three records into three HTTP requests through the batch submitter
+            runDataStreamJob(
+                    server.baseUrl() + "/oidc",
+                    List.of("{\"id\":1}", "{\"id\":2}", "{\"id\":3}"),
+                    Map.of(
+                            HttpConnectorConfigConstants.SINK_HTTP_REQUEST_MODE,
+                            SinkRequestSubmitMode.BATCH.getMode(),
+                            HttpConnectorConfigConstants.SINK_HTTP_BATCH_REQUEST_SIZE,
+                            "1",
+                            HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_ENDPOINT_URL,
+                            server.baseUrl() + "/oauth/token",
+                            HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_REQUEST,
+                            "grant_type=client_credentials&client_id=sink"));
+
+            // one token for the whole job, and the configured token request body was sent
+            assertThat(server.requestCount("/oauth/token")).isEqualTo(1);
+            assertThat(server.requests("/oauth/token").get(0).body())
+                    .isEqualTo("grant_type=client_credentials&client_id=sink");
+            assertThat(server.requests("/oidc"))
+                    .hasSize(3)
+                    .allSatisfy(
+                            request -> {
+                                assertThat(request.header("Authorization"))
+                                        .contains("Bearer token-1");
+                                assertThat(request.responseStatus()).isEqualTo(200);
+                            });
+        }
+    }
+
+    @Test
+    void refreshesExpiredOidcTokenBeforeNextRequest() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            // expires_in 0: every token is expired as soon as it is issued
+            server.registerTokenEndpoint("/oauth/token", 0, 0);
+            server.registerBearerProtected("/oidc-refresh");
+
+            runDataStreamJob(
+                    server.baseUrl() + "/oidc-refresh",
+                    List.of("{\"id\":1}", "{\"id\":2}", "{\"id\":3}"),
+                    Map.of(
+                            HttpConnectorConfigConstants.SINK_HTTP_REQUEST_MODE,
+                            SinkRequestSubmitMode.SINGLE.getMode(),
+                            HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_ENDPOINT_URL,
+                            server.baseUrl() + "/oauth/token",
+                            HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_REQUEST,
+                            "grant_type=client_credentials"));
+
+            assertThat(server.requestCount("/oauth/token")).isEqualTo(3);
+            assertThat(server.requests("/oidc-refresh"))
+                    .extracting(request -> request.header("Authorization").orElse(null))
+                    .containsExactlyInAnyOrder(
+                            "Bearer token-1", "Bearer token-2", "Bearer token-3");
+        }
+    }
+
+    @Test
+    void replacesConfiguredAuthorizationHeaderWithOidcBearerToken() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerTokenEndpoint("/oauth/token", 3600, 0);
+            server.registerBearerProtected("/oidc-replace");
+
+            runDataStreamJob(
+                    server.baseUrl() + "/oidc-replace",
+                    List.of("{\"id\":1}"),
+                    Map.of(
+                            HttpConnectorConfigConstants.SINK_HEADER_PREFIX + "Authorization",
+                            "Basic c3RhdGljOnNlY3JldA==",
+                            HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_ENDPOINT_URL,
+                            server.baseUrl() + "/oauth/token",
+                            HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_REQUEST,
+                            "grant_type=client_credentials"));
+
+            MockHttpServer.RecordedRequest request = server.requests("/oidc-replace").get(0);
+            // the static header is gone, the bearer is the only Authorization value
+            assertThat(request.headerValues("Authorization")).containsExactly("Bearer token-1");
+            // other configured headers are untouched
+            assertThat(request.header("Content-Type")).contains("application/json");
+            assertThat(request.responseStatus()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void failsTheJobWhenTokenEndpointDoesNotAnswerWithinRequestTimeout() {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerTokenEndpoint("/oauth/token", 3600, 2_000);
+            server.registerSequence("/oidc-timeout", 200);
+
+            assertThatThrownBy(
+                            () ->
+                                    runDataStreamJob(
+                                            server.baseUrl() + "/oidc-timeout",
+                                            List.of("{\"id\":1}"),
+                                            Map.of(
+                                                    HttpConnectorConfigConstants
+                                                            .SINK_HTTP_TIMEOUT_SECONDS,
+                                                    "500ms",
+                                                    HttpConnectorConfigConstants
+                                                            .OIDC_AUTH_TOKEN_ENDPOINT_URL,
+                                                    server.baseUrl() + "/oauth/token",
+                                                    HttpConnectorConfigConstants
+                                                            .OIDC_AUTH_TOKEN_REQUEST,
+                                                    "grant_type=client_credentials")))
+                    .hasStackTraceContaining("OIDC access token");
+
+            // no sink request is sent without a token
+            assertThat(server.requestCount("/oidc-timeout")).isZero();
+        }
+    }
+
+    @Test
+    void sendsRequestsThroughConfiguredProxyWithBasicAuthentication() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerProxyRequiringBasicAuth("/via-proxy");
+
+            // the sink URL points at a host that does not exist; only a proxy can deliver it
+            runDataStreamJob(
+                    "http://sink.invalid:19999/via-proxy",
+                    List.of("{\"id\":1}"),
+                    Map.of(
+                            HttpConnectorConfigConstants.SINK_PROXY_HOST,
+                            "localhost",
+                            HttpConnectorConfigConstants.SINK_PROXY_PORT,
+                            String.valueOf(server.port()),
+                            HttpConnectorConfigConstants.SINK_PROXY_USERNAME,
+                            "proxy-user",
+                            HttpConnectorConfigConstants.SINK_PROXY_PASSWORD,
+                            "proxy-pass"));
+
+            List<MockHttpServer.RecordedRequest> requests = server.requests("/via-proxy");
+            // first attempt is challenged, second carries the proxy credentials
+            assertThat(requests).hasSize(2);
+            assertThat(requests.get(0).responseStatus()).isEqualTo(407);
+            assertThat(requests.get(0).header("Proxy-Authorization")).isEmpty();
+            assertThat(requests.get(1).responseStatus()).isEqualTo(200);
+            assertThat(requests.get(1).header("Proxy-Authorization"))
+                    .contains(
+                            "Basic "
+                                    + Base64.getEncoder()
+                                            .encodeToString(
+                                                    "proxy-user:proxy-pass"
+                                                            .getBytes(StandardCharsets.UTF_8)));
+            // a request sent to a proxy carries the absolute URI of the real target
+            assertThat(requests.get(1).rawUri()).startsWith("http://sink.invalid:19999/via-proxy");
+            assertThat(requests.get(1).body()).isEqualTo("[{\"id\":1}]");
+        }
+    }
+
+    @Test
+    void negotiatesHttp2WhenConfigured() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerSequence("/h2", 200);
+
+            runDataStreamJob(
+                    server.baseUrl() + "/h2",
+                    List.of("{\"id\":1}"),
+                    Map.of(HttpConnectorConfigConstants.SINK_HTTP_VERSION, "HTTP_2"));
+
+            // over cleartext the JDK client asks for HTTP/2 with an h2c upgrade; the embedded
+            // server only speaks HTTP/1.1, so it ignores the upgrade and answers normally
+            MockHttpServer.RecordedRequest request = server.requests("/h2").get(0);
+            assertThat(request.header("Upgrade")).contains("h2c");
+            assertThat(request.responseStatus()).isEqualTo(200);
         }
     }
 

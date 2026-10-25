@@ -156,6 +156,47 @@ class TableApiHttpSinkIT {
         }
     }
 
+    @Test
+    void addsBearerTokenFromOidcDdlOptions() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerTokenEndpoint("/oauth/token", 3600, 0);
+            server.registerBearerProtected("/table-oidc");
+
+            runInsert(
+                    server.baseUrl() + "/table-oidc",
+                    Map.of(
+                            "http.security.oidc.token.endpoint.url",
+                            server.baseUrl() + "/oauth/token",
+                            "http.security.oidc.token.request",
+                            "grant_type=client_credentials&client_id=table",
+                            "http.sink.http-version",
+                            "HTTP_1_1"));
+
+            assertThat(server.requestCount("/oauth/token")).isEqualTo(1);
+            assertThat(server.requests("/table-oidc")).hasSize(1);
+            MockHttpServer.RecordedRequest request = server.requests("/table-oidc").get(0);
+            assertThat(request.header("Authorization")).contains("Bearer token-1");
+            assertThat(request.protocol()).isEqualTo("HTTP/1.1");
+            assertThat(request.responseStatus()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void rejectsUnknownHttpVersionFromDdlOptions() {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            server.registerSequence("/table-http-version", 200);
+
+            assertThatThrownBy(
+                            () ->
+                                    runInsert(
+                                            server.baseUrl() + "/table-http-version",
+                                            Map.of("http.sink.http-version", "HTTP_3")))
+                    .hasStackTraceContaining("http.sink.http-version");
+
+            assertThat(server.requestCount("/table-http-version")).isZero();
+        }
+    }
+
     private static void runInsert(String endpointUrl, Map<String, String> options) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);

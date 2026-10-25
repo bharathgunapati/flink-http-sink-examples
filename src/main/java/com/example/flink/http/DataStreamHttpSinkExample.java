@@ -18,7 +18,46 @@ public final class DataStreamHttpSinkExample {
             runRetryingSink();
             runIgnoredStatusSink();
             runSplitBatchRetrySink();
+            runOidcSink();
         }
+    }
+
+    /**
+     * The mock server plays the OIDC token endpoint and a bearer-protected sink endpoint. The
+     * console shows one call to the token endpoint and every sink request carrying {@code
+     * Authorization: Bearer token-1}.
+     */
+    private static void runOidcSink() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+
+        HttpSink<String> sink =
+                HttpSink.<String>builder()
+                        .setEndpointUrl(MockHttpServer.BASE_URL + "/oidc-protected")
+                        .setElementConverter(
+                                (event, context) ->
+                                        new HttpSinkRequestEntry(
+                                                "POST", event.getBytes(StandardCharsets.UTF_8)))
+                        .setProperty(
+                                HttpConnectorConfigConstants.SINK_HEADER_PREFIX + "Content-Type",
+                                "application/json")
+                        .setProperty(
+                                HttpConnectorConfigConstants.SINK_HTTP_REQUEST_MODE,
+                                SinkRequestSubmitMode.SINGLE.getMode())
+                        .setProperty(
+                                HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_ENDPOINT_URL,
+                                MockHttpServer.BASE_URL + "/oauth/token")
+                        .setProperty(
+                                HttpConnectorConfigConstants.OIDC_AUTH_TOKEN_REQUEST,
+                                "grant_type=client_credentials&client_id=example")
+                        .build();
+
+        env.fromCollection(
+                        List.of(
+                                "{\"id\":1,\"kind\":\"oidc-demo\"}",
+                                "{\"id\":2,\"kind\":\"oidc-demo\"}"))
+                .sinkTo(sink);
+        env.execute("DataStream HTTP sink OIDC example");
     }
 
     /**
