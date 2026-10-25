@@ -14,6 +14,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 class DataStreamHttpSinkIT {
 
@@ -75,6 +76,90 @@ class DataStreamHttpSinkIT {
                     .containsExactly(
                             "[{\"id\":1,\"api\":\"datastream\"},{\"id\":2,\"api\":\"datastream\"}]",
                             "[{\"id\":1,\"api\":\"datastream\"},{\"id\":2,\"api\":\"datastream\"}]");
+        }
+    }
+
+    @Test
+    void retriesOnlyTheFailedRequestWhenOneFlushIsSplitIntoSeveralHttpRequests()
+            throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            // The first HTTP request that carries record 1 fails; every other request succeeds.
+            server.registerFailOnceForBodiesContaining("/split-batch", 500, "\"id\":1");
+
+            runDataStreamJob(
+                    server.baseUrl() + "/split-batch",
+                    List.of("{\"id\":1}", "{\"id\":2}", "{\"id\":3}"),
+                    Map.of(
+                            HttpConnectorConfigConstants.SINK_HTTP_REQUEST_MODE,
+                            SinkRequestSubmitMode.BATCH.getMode(),
+                            HttpConnectorConfigConstants.SINK_HTTP_BATCH_REQUEST_SIZE,
+                            "2",
+                            HttpConnectorConfigConstants.SINK_MAX_RETRIES,
+                            "2",
+                            HttpConnectorConfigConstants.SINK_RETRY_CODES,
+                            "500",
+                            HttpConnectorConfigConstants.SINK_RETRY_FIXED_DELAY_DELAY,
+                            "10ms"));
+
+            List<MockHttpServer.RecordedRequest> requests = server.requests("/split-batch");
+            // One flush of three records with batch size 2 becomes two HTTP requests. They are
+            // sent concurrently, so the first two may arrive in either order.
+            assertThat(requests).hasSize(3);
+            assertThat(requests.subList(0, 2))
+                    .extracting(
+                            MockHttpServer.RecordedRequest::body,
+                            MockHttpServer.RecordedRequest::responseStatus)
+                    .containsExactlyInAnyOrder(
+                            tuple("[{\"id\":1},{\"id\":2}]", 500), tuple("[{\"id\":3}]", 200));
+            // Only the failed request is resent, with its original two records.
+            assertThat(requests.get(2).body()).isEqualTo("[{\"id\":1},{\"id\":2}]");
+            assertThat(requests.get(2).responseStatus()).isEqualTo(200);
+            // Record 3 was accepted on the first attempt and is never sent again.
+            assertThat(requests)
+                    .extracting(MockHttpServer.RecordedRequest::body)
+                    .filteredOn(body -> body.contains("\"id\":3"))
+                    .hasSize(1);
+        }
+    }
+
+    @Test
+    void regroupsRetriedRecordsIntoNewHttpRequests() throws Exception {
+        try (MockHttpServer server = MockHttpServer.startOnRandomPort()) {
+            // Records 1 and 3 fail on their first request each; record 2 succeeds.
+            server.registerFailOnceForBodiesContaining("/regroup", 500, "\"id\":1", "\"id\":3");
+
+            runDataStreamJob(
+                    server.baseUrl() + "/regroup",
+                    List.of("{\"id\":1}", "{\"id\":2,\"method\":\"PUT\"}", "{\"id\":3}"),
+                    Map.of(
+                            HttpConnectorConfigConstants.SINK_HTTP_REQUEST_MODE,
+                            SinkRequestSubmitMode.BATCH.getMode(),
+                            HttpConnectorConfigConstants.SINK_HTTP_BATCH_REQUEST_SIZE,
+                            "10",
+                            HttpConnectorConfigConstants.SINK_MAX_RETRIES,
+                            "2",
+                            HttpConnectorConfigConstants.SINK_RETRY_CODES,
+                            "500",
+                            HttpConnectorConfigConstants.SINK_RETRY_FIXED_DELAY_DELAY,
+                            "10ms"));
+
+            List<MockHttpServer.RecordedRequest> requests = server.requests("/regroup");
+            // The PUT in the middle splits the first attempt into three HTTP requests.
+            assertThat(requests).hasSize(4);
+            assertThat(requests.subList(0, 3))
+                    .extracting(
+                            MockHttpServer.RecordedRequest::method,
+                            MockHttpServer.RecordedRequest::body,
+                            MockHttpServer.RecordedRequest::responseStatus)
+                    .containsExactlyInAnyOrder(
+                            tuple("POST", "[{\"id\":1}]", 500),
+                            tuple("PUT", "[{\"id\":2,\"method\":\"PUT\"}]", 200),
+                            tuple("POST", "[{\"id\":3}]", 500));
+            // On retry the two failed POST records are adjacent and travel in one request.
+            MockHttpServer.RecordedRequest retry = requests.get(3);
+            assertThat(retry.method()).isEqualTo("POST");
+            assertThat(retry.body()).isEqualTo("[{\"id\":1},{\"id\":3}]");
+            assertThat(retry.responseStatus()).isEqualTo(200);
         }
     }
 
@@ -241,7 +326,8 @@ class DataStreamHttpSinkIT {
                         .setElementConverter(
                                 (event, context) ->
                                         new HttpSinkRequestEntry(
-                                                "POST", event.getBytes(StandardCharsets.UTF_8)))
+                                                methodFor(event),
+                                                event.getBytes(StandardCharsets.UTF_8)))
                         .setProperty(
                                 HttpConnectorConfigConstants.SINK_HEADER_PREFIX + "Content-Type",
                                 "application/json");
@@ -250,5 +336,10 @@ class DataStreamHttpSinkIT {
 
         env.fromCollection(payloads).sinkTo(builder.build());
         env.execute("DataStream HTTP sink scenario");
+    }
+
+    /** Records that carry {@code "method":"PUT"} are sent with PUT, everything else with POST. */
+    private static String methodFor(String event) {
+        return event.contains("\"method\":\"PUT\"") ? "PUT" : "POST";
     }
 }

@@ -40,6 +40,8 @@ The DataStream example writes JSON records to:
 
 - `/retry-then-ok`: returns `500` once, then `200`
 - `/ignored`: returns `404`, configured as ignored/success-like
+- `/split-batch-retry`: three records with `http.sink.request.batch.size = 2`; the request carrying
+  record 1 fails once, so the console shows only that request being resent and record 3 sent once
 
 ## Run Table API Example
 
@@ -66,6 +68,8 @@ The integration suite covers:
 
 - DataStream single-request retry: `500 -> 200`
 - DataStream batch retry: `503 -> 200`, asserting the same JSON array payload is retried
+- DataStream split flush: one flush split into several HTTP requests retries only the failed
+  request's records, and retried records are regrouped into new requests (FLINK-40278)
 - retry exhaustion and `http.sink.max-retries = 0`
 - ignored response codes treated as success without retrying
 - exponential-delay retry configuration
@@ -73,7 +77,7 @@ The integration suite covers:
   exponential-delay retry options
 
 The GitHub Actions workflow checks out `bharathgunapati/flink-connector-http` branch
-`FLINK-40277-sink-response-retries`, installs the connector snapshot, then runs `mvn verify`.
+`FLINK-40278-sink-batch-retry-semantics`, installs the connector snapshot, then runs `mvn verify`.
 
 ## Mock Endpoints
 
@@ -83,5 +87,6 @@ The embedded mock server exposes:
 - `POST /retry-then-ok`: first request `500`, subsequent requests `200`
 - `POST /always-fail`: always `500`
 - `POST /ignored`: always `404`
+- `POST /split-batch-retry`: `500` for the first request whose body contains `"id":1`, `200` otherwise
 
 The server logs every request body so retry behavior is visible from the console.
