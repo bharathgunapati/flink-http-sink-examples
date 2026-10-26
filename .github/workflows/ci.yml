@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: bharathgunapati/flink-connector-http
-          ref: FLINK-40279-sink-oidc-proxy-http-version
+          ref: examples-ci-open-prs
           path: flink-connector-http
 
       - name: Install connector snapshot

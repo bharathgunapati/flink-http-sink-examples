@@ -63,8 +63,11 @@ The tests install/use the locally published `flink-connector-http` artifact and 
 against an embedded HTTP server:
 
 ```bash
-mvn verify
+mvn clean verify
 ```
+
+Use `clean` whenever the connector snapshot was reinstalled: the integration tests run against the
+shaded jar in `target/`, and a stale jar keeps the previously installed connector classes.
 
 The integration suite covers:
 
@@ -84,11 +87,17 @@ The integration suite covers:
   sink retries with `Proxy-Authorization` and the absolute target URI
 - `http.sink.http-version = HTTP_2`: the client asks for an h2c upgrade over cleartext
 - Table API DDL coverage for the OIDC options and for rejecting an unknown HTTP version
+- Sink metrics (FLINK-40281): a recording metric reporter reads the `http_sink_connector` counters,
+  the request latency histogram and the per-status-code counters back after each job, for a batch
+  that succeeds on retry, a fatal response, an ignored response, retry exhaustion, per-entry
+  weighting of a batch response, and an unreachable endpoint
 
 The GitHub Actions workflow checks out `bharathgunapati/flink-connector-http` branch
-`FLINK-40279-sink-oidc-proxy-http-version`, installs the connector snapshot, then runs `mvn verify`.
-That branch carries the retry behaviour from FLINK-40277 as well as the OIDC, proxy and HTTP
-version options, so every scenario above runs against it.
+`examples-ci-open-prs`, installs the connector snapshot, then runs `mvn verify`. That branch is
+`apache/flink-connector-http` main plus the open pull requests these tests cover, currently
+FLINK-40279 (OIDC, proxy, HTTP version; PR #58) and FLINK-40281 (sink metrics; PR #61), so every
+scenario above runs against one connector build. It is rebuilt whenever one of those PRs changes or
+merges.
 
 ## Mock Endpoints
 
